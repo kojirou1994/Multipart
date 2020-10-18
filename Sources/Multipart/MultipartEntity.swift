@@ -3,8 +3,8 @@ import Foundation
 /// A type that can be contained in a multipart message
 public protocol MultipartEntity: CustomStringConvertible {
     
-    /// Complete message body
-    var body: Data { get }
+    /// Write to message body
+    func write<D>(to body: inout D) where D: MutableDataProtocol
     
     /// Message headers that apply to this body part
     var headers: [MessageHeader] { get set }

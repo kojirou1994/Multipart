@@ -4,7 +4,6 @@ import Foundation
 /// - SeeAlso: Defined in [RFC 2046, Section 5.1](https://tools.ietf.org/html/rfc2046#section-5.1)
 public struct Multipart {
     static let CRLF = "\r\n"
-    static let CRLFData = Multipart.CRLF.data(using: .utf8)!
     
     /// A string that is optionally inserted before the first boundary delimiter. Can be used as an explanatory note for
     /// recipients who read the message with pre-MIME software, since such notes will be ignored by MIME-compliant software.
@@ -14,17 +13,22 @@ public struct Multipart {
     public var headers: [MessageHeader] = []
     
     let type: Subtype
-    let boundary = Boundary()
+    public let boundary: String
     var entities: [MultipartEntity]
     
     /// Creates and initializes a Multipart body with the given subtype.
     /// - Parameter type: The multipart subtype
     /// - Parameter parts: Array of body subparts to encapsulate
-    public init(type: Subtype, parts: [MultipartEntity] = []) {
+    public init(type: Subtype, parts: [MultipartEntity] = [],
+                boundary: String = randomBoundaryString()) {
+        assert(!boundary.isEmpty)
+        assert(boundary.allSatisfy({$0.isASCII}))
+        assert(boundary.count <= 70)
         self.type = type
         self.entities = parts
+        self.boundary = boundary
         
-        self.setValue("\(type.rawValue); boundary=\(self.boundary.stringValue)", forHeaderField: "Content-Type")
+        self.setValue("\(type.rawValue); boundary=\(self.boundary)", forHeaderField: "Content-Type")
     }
     
     /// Adds a subpart to the end of the body.
@@ -32,35 +36,65 @@ public struct Multipart {
     public mutating func append(_ newElement: MultipartEntity) {
         self.entities.append(newElement)
     }
+
+//    func checkBoundary() {
+//        assert(!boundary.isEmpty)
+//        assert(boundary.allSatisfy({$0.isASCII}))
+//        assert(boundary.count <= 70)
+//    }
 }
 
 extension Multipart: MultipartEntity {
-    /// Complete message body, including boundaries and any nested multipart containers.
-    public var body: Data {
-        var data = Data()
-        
-        if let preamble = self.preamble?.data(using: .utf8) {
-            data.append(preamble + Multipart.CRLFData)
-            data.append(Multipart.CRLFData)
+    public func write<D>(to body: inout D) where D: MutableDataProtocol {
+        func writeCRLF() {
+            body.append(.init(ascii: "\r"))
+            body.append(.init(ascii: "\n"))
         }
-        
-        if self.entities.count > 0 {
-            for entity in self.entities {
-                data.append(self.boundary.delimiterData + Multipart.CRLFData)
-                if let headerData = entity.headers.data() {
-                    data.append(headerData)
+        func writeBoundary(isEnd: Bool) {
+            func writeDelimiter() {
+                body.append(.init(ascii: "-"))
+                body.append(.init(ascii: "-"))
+            }
+
+            writeDelimiter()
+            body.append(contentsOf: boundary.utf8)
+            if isEnd {
+                writeDelimiter()
+            }
+        }
+
+        preamble.map { preamble in
+            body.append(contentsOf: preamble.utf8)
+            writeCRLF()
+            writeCRLF()
+        }
+
+        if !entities.isEmpty {
+            for entity in entities {
+                writeBoundary(isEnd: false)
+                writeCRLF()
+
+                entity.headers.data().map { headerData in
+                    body.append(contentsOf: headerData)
                 }
-                data.append(Multipart.CRLFData)
-                data.append(entity.body + Multipart.CRLFData)
+                writeCRLF()
+                entity.write(to: &body)
+                writeCRLF()
             }
         } else {
-            data.append(self.boundary.delimiterData)
-            data.append(Multipart.CRLFData)
-            data.append(Multipart.CRLFData)
+            writeBoundary(isEnd: false)
+            writeCRLF()
+            writeCRLF()
         }
-        
-        data.append(self.boundary.distinguishedDelimiterData)
-        return data
+
+        writeBoundary(isEnd: true)
+    }
+
+    /// Complete message body, including boundaries and any nested multipart containers.
+    public var body: Data {
+        var body = Data()
+        write(to: &body)
+        return body
     }
 }
 
@@ -175,17 +209,18 @@ extension Multipart {
         if let preamble = self.preamble {
             descriptionString += preamble + Multipart.CRLF + Multipart.CRLF
         }
-        
+        let boundaryDelimiter = boundary + "--"
+
         if self.entities.count > 0 {
             for entity in self.entities {
-                descriptionString += self.boundary.delimiter + Multipart.CRLF + entity.description + Multipart.CRLF
+                descriptionString += boundaryDelimiter + Multipart.CRLF + entity.description + Multipart.CRLF
             }
         } else {
-            descriptionString += self.boundary.delimiter + Multipart.CRLF + Multipart.CRLF
+            descriptionString += boundaryDelimiter + Multipart.CRLF + Multipart.CRLF
         }
-        
-        descriptionString += self.boundary.distinguishedDelimiter
-        
+
+        descriptionString += boundaryDelimiter + "--"
+
         return descriptionString
     }
 }
